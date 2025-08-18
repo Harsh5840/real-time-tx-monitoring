@@ -1,0 +1,17 @@
+# Node
+node_modules/
+.next/
+.env
+
+# Go
+bin/
+*.out
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Docker
+*.log
+.DS_Store
