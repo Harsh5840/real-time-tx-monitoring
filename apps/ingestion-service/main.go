@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -9,8 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"internal/config"
-	"internal/publisher"
+	"ingestion-service/internal/config"
+	"ingestion-service/internal/models"
+	"ingestion-service/internal/publisher"
 )
 
 func main() {
@@ -60,4 +62,34 @@ func main() {
 	}
 
 	log.Println("Server exited gracefully")
+}
+
+// IngestHandler accepts a JSON transaction and publishes it to Kafka
+func IngestHandler(p *publisher.Producer, topic string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var txn models.Transaction
+		if err := json.NewDecoder(r.Body).Decode(&txn); err != nil {
+			http.Error(w, "invalid JSON payload", http.StatusBadRequest)
+			return
+		}
+
+		payload, err := json.Marshal(txn)
+		if err != nil {
+			http.Error(w, "failed to serialize payload", http.StatusInternalServerError)
+			return
+		}
+
+		if err := p.Publish(topic, payload); err != nil {
+			http.Error(w, "failed to enqueue event", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("enqueued"))
+	}
 }
