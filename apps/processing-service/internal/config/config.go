@@ -8,10 +8,10 @@ import (
 // Config holds all configuration for the processing service
 type Config struct {
 	// Kafka configuration
-	KafkaBrokers   string
-	InputTopic     string
-	OutputTopic    string
-	ConsumerGroup  string
+	KafkaBrokers  string
+	InputTopic    string
+	OutputTopic   string
+	ConsumerGroup string
 
 	// Processing configuration
 	MaxRetries     int
@@ -23,8 +23,8 @@ type Config struct {
 	MetricsPort    string
 
 	// Business rules configuration
-	RiskThreshold float64
-	MaxAmount     float64
+	RiskThreshold    float64
+	MaxAmount        float64
 	BlockedCountries []string
 	BlockedMerchants []string
 }
