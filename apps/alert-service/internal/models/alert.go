@@ -13,3 +13,4 @@ type Alert struct {
 	Timestamp     time.Time         `json:"timestamp"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
 }
+

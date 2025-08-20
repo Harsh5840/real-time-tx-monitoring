@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  # Redis for idempotency and caching
+  redis:
+    image: redis:7-alpine
+    container_name: ingestion-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    environment:
+      - REDIS_PASSWORD=  # Empty for local dev
+
+  # Kafka (using existing setup from parent docker-compose)
+  # This service will connect to the Kafka instance defined in the parent docker-compose.yaml
+
+  # Ingestion Service
+  ingestion-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ingestion-service
+    ports:
+      - "8080:8080"
+      - "9090:9090"  # Prometheus metrics
+    environment:
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
+      - KAFKA_BROKERS=kafka:9092
+      - KAFKA_TOPIC=transactions.raw
+      - JWT_SECRET=your-secret-key-change-in-production
+      - JWT_EXPIRATION_HOURS=24
+      - RATE_LIMIT_PER_SECOND=10000
+      - MAX_REQUEST_SIZE=1048576
+      - METRICS_ENABLED=true
+      - METRICS_PORT=9090
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  redis_data:
+    driver: local

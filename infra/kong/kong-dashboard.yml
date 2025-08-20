@@ -1,0 +1,6 @@
+kong_admin_url: http://kong:8001
+kong_api_key: admin-key-12345
+auth:
+  name: basic-auth
+  username: admin
+  password: admin

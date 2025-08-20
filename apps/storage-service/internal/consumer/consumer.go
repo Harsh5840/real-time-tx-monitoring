@@ -38,7 +38,6 @@ func NewConsumer(brokers string, groupID, topic string, h Handler) *Consumer {
 		MinBytes: 10e3, // 10KB
 		MaxBytes: 10e6, // 10MB
 	})
-
 	return &Consumer{reader: r, h: h}
 }
 

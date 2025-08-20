@@ -24,3 +24,4 @@ COPY --from=builder /app/alert-service /app/alert-service
 
 USER nonroot:nonroot
 ENTRYPOINT ["/app/alert-service"]
+

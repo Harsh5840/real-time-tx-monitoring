@@ -1,0 +1,384 @@
+name: Barclays Transaction Monitoring CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  release:
+    types: [ published ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Security scanning
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+          
+      - name: Run Bandit security linter
+        run: |
+          pip install bandit
+          bandit -r . -f json -o bandit-report.json || true
+          
+      - name: Run Go security audit
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./... || true
+
+  # Code quality and testing
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: [1.25, 1.26]
+        
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ matrix.go-version }}
+          
+      - name: Install dependencies
+        run: |
+          cd apps/ingestion-service
+          go mod download
+          
+      - name: Run linter
+        run: |
+          cd apps/ingestion-service
+          go install golang.org/x/lint/golint@latest
+          golint -set_exit_status ./...
+          
+      - name: Run tests
+        run: |
+          cd apps/ingestion-service
+          go test -v -race -coverprofile=coverage.out ./...
+          
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./apps/ingestion-service/coverage.out
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+  # Build and test ingestion service
+  build-ingestion:
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/ingestion-service
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            
+      - name: Build and push ingestion service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./apps/ingestion-service
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          
+      - name: Run load tests
+        run: |
+          cd apps/ingestion-service
+          # Install k6
+          curl -L https://github.com/grafana/k6/releases/download/v0.45.0/k6-v0.45.0-linux-amd64.tar.gz | tar xz
+          sudo cp k6-v0.45.0-linux-amd64/k6 /usr/local/bin
+          
+          # Start service and run load test
+          docker-compose up -d redis
+          go run main.go &
+          sleep 30
+          k6 run load-test.js
+          
+      - name: Cleanup
+        if: always()
+        run: |
+          docker-compose down
+          pkill -f "go run main.go" || true
+
+  # Infrastructure validation
+  validate-infra:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.5.0"
+          
+      - name: Terraform Format Check
+        run: |
+          cd infra/terraform
+          terraform fmt -check
+          
+      - name: Terraform Init
+        run: |
+          cd infra/terraform
+          terraform init
+          
+      - name: Terraform Validate
+        run: |
+          cd infra/terraform
+          terraform validate
+          
+      - name: Terraform Plan
+        run: |
+          cd infra/terraform
+          terraform plan -var-file=staging.tfvars -out=tfplan
+          
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v3
+        with:
+          name: terraform-plan
+          path: infra/terraform/tfplan
+
+  # Deploy to staging
+  deploy-staging:
+    needs: [build-ingestion, validate-infra]
+    runs-on: ubuntu-latest
+    environment: staging
+    if: github.ref == 'refs/heads/develop'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+          
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'latest'
+          
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+          
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region us-west-2 --name barclays-tx-monitoring-cluster
+          
+      - name: Deploy to staging
+        run: |
+          cd infra/helm/ingestion-service
+          helm upgrade --install ingestion-service-staging . \
+            --namespace staging \
+            --create-namespace \
+            --set image.tag=${{ github.sha }} \
+            --set environment=staging
+          
+      - name: Wait for deployment
+        run: |
+          kubectl wait --for=condition=available --timeout=300s deployment/ingestion-service-staging -n staging
+          
+      - name: Run smoke tests
+        run: |
+          # Wait for service to be ready
+          sleep 30
+          
+          # Test health endpoint
+          kubectl run test-pod --image=curlimages/curl -i --rm --restart=Never -- \
+            curl -f http://ingestion-service-staging:8080/health
+          
+      - name: Notify deployment
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#devops'
+          text: 'Staging deployment ${{ job.status }} for ${{ github.repository }}'
+
+  # Deploy to production
+  deploy-production:
+    needs: [build-ingestion, validate-infra]
+    runs-on: ubuntu-latest
+    environment: production
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+          
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'latest'
+          
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+          
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region us-west-2 --name barclays-tx-monitoring-cluster
+          
+      - name: Deploy to production
+        run: |
+          cd infra/helm/ingestion-service
+          helm upgrade --install ingestion-service-production . \
+            --namespace production \
+            --create-namespace \
+            --set image.tag=${{ github.sha }} \
+            --set environment=production \
+            --set replicaCount=5
+          
+      - name: Wait for deployment
+        run: |
+          kubectl wait --for=condition=available --timeout=300s deployment/ingestion-service-production -n production
+          
+      - name: Run production tests
+        run: |
+          # Wait for service to be ready
+          sleep 60
+          
+          # Test health endpoint
+          kubectl run test-pod --image=curlimages/curl -i --rm --restart=Never -- \
+            curl -f http://ingestion-service-production:8080/health
+          
+          # Test metrics endpoint
+          kubectl run test-pod --image=curlimages/curl -i --rm --restart=Never -- \
+            curl -f http://ingestion-service-production:9090/metrics
+          
+      - name: Notify deployment
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#devops'
+          text: 'Production deployment ${{ job.status }} for ${{ github.repository }}'
+
+  # Performance testing
+  performance-test:
+    needs: [deploy-staging]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+          
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+          
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region us-west-2 --name barclays-tx-monitoring-cluster
+          
+      - name: Install k6
+        run: |
+          curl -L https://github.com/grafana/k6/releases/download/v0.45.0/k6-v0.45.0-linux-amd64.tar.gz | tar xz
+          sudo cp k6-v0.45.0-linux-amd64/k6 /usr/local/bin
+          
+      - name: Run performance tests
+        run: |
+          cd apps/ingestion-service
+          
+          # Get service URL
+          SERVICE_URL=$(kubectl get svc -n staging ingestion-service-staging -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          
+          # Run load test
+          k6 run --env BASE_URL=http://$SERVICE_URL:8080 load-test.js
+          
+      - name: Upload performance results
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-results
+          path: apps/ingestion-service/load-test-summary.json
+
+  # Security compliance check
+  compliance-check:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Run OWASP ZAP scan
+        uses: zaproxy/action-full-scan@v0.8.0
+        with:
+          target: 'https://api.barclays.com'
+          
+      - name: Run container security scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/ingestion-service:${{ github.sha }}
+          format: 'sarif'
+          output: 'container-scan-results.sarif'
+          
+      - name: Upload container scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'container-scan-results.sarif'

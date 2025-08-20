@@ -1,0 +1,18 @@
+apiVersion: v2
+name: ingestion-service
+description: A Helm chart for Barclays Transaction Ingestion Service
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - barclays
+  - transaction
+  - ingestion
+  - kafka
+  - redis
+home: https://github.com/barclays/real-time-tx-monitoring
+sources:
+  - https://github.com/barclays/real-time-tx-monitoring
+maintainers:
+  - name: Barclays DevOps Team
+    email: devops@barclays.com

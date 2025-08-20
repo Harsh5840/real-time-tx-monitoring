@@ -1,0 +1,296 @@
+_format_version: "3.0"
+_transform: true
+
+services:
+  - name: ingestion-service
+    url: http://ingestion-service:8080
+    routes:
+      - name: ingestion-api
+        protocols:
+          - https
+        paths:
+          - /api/v1
+        strip_path: false
+        https_redirect_status_code: 301
+        preserve_host: true
+        regex_priority: 0
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        headers:
+          - name: "X-Request-ID"
+            values:
+              - ".*"
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 10000
+          hour: 100000
+          day: 1000000
+          policy: local
+          fault_tolerant: true
+          hide_client_headers: false
+      - name: jwt
+        config:
+          uri_param_names:
+            - jwt
+          cookie_names:
+            - jwt
+          claims_to_verify:
+            - exp
+            - nbf
+          key_claim_name: kid
+          secret_is_base64: false
+          algorithms:
+            - HS256
+          key:
+            - key: your-secret-key-change-in-production
+              key_type: secret
+      - name: cors
+        config:
+          origins:
+            - "*"
+          methods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+            - OPTIONS
+          headers:
+            - Content-Type
+            - Authorization
+            - Idempotency-Key
+            - X-Request-ID
+          exposed_headers:
+            - X-Idempotency-Cache
+            - X-Request-ID
+          credentials: true
+          max_age: 3600
+      - name: request-transformer
+        config:
+          add:
+            headers:
+              - X-Gateway: kong
+              - X-Request-ID: ${request_id}
+          remove:
+            headers:
+              - X-Forwarded-For
+      - name: response-transformer
+        config:
+          add:
+            headers:
+              - X-Gateway: kong
+              - X-Response-Time: ${latency}
+          remove:
+            headers:
+              - X-Powered-By
+              - Server
+
+  - name: metrics-service
+    url: http://ingestion-service:9090
+    routes:
+      - name: metrics-api
+        protocols:
+          - https
+        paths:
+          - /metrics
+        strip_path: false
+        https_redirect_status_code: 301
+        preserve_host: true
+        regex_priority: 0
+        methods:
+          - GET
+        headers:
+          - name: "X-Request-ID"
+            values:
+              - ".*"
+    plugins:
+      - name: ip-restriction
+        config:
+          allow:
+            - 10.0.0.0/8
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+            - 127.0.0.1
+      - name: request-transformer
+        config:
+          add:
+            headers:
+              - X-Gateway: kong
+              - X-Request-ID: ${request_id}
+
+  - name: health-service
+    url: http://ingestion-service:8080
+    routes:
+      - name: health-api
+        protocols:
+          - https
+        paths:
+          - /health
+        strip_path: false
+        https_redirect_status_code: 301
+        preserve_host: true
+        regex_priority: 0
+        methods:
+          - GET
+        headers:
+          - name: "X-Request-ID"
+            values:
+              - ".*"
+    plugins:
+      - name: request-transformer
+        config:
+          add:
+            headers:
+              - X-Gateway: kong
+              - X-Request-ID: ${request_id}
+
+consumers:
+  - username: barclays-admin
+    custom_id: admin-user-001
+    tags:
+      - admin
+      - barclays
+    keyauth_credentials:
+      - key: admin-key-12345
+    acls:
+      - group: admin
+    basicauth_credentials:
+      - username: admin
+        password: $2a$10$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4J/8KzqK8K
+
+  - username: barclays-teller
+    custom_id: teller-user-001
+    tags:
+      - teller
+      - barclays
+    keyauth_credentials:
+      - key: teller-key-67890
+    acls:
+      - group: teller
+    basicauth_credentials:
+      - username: teller
+        password: $2a$10$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4J/8KzqK8K
+
+  - username: barclays-auditor
+    custom_id: auditor-user-001
+    tags:
+      - auditor
+      - barclays
+    keyauth_credentials:
+      - key: auditor-key-11111
+    acls:
+      - group: auditor
+    basicauth_credentials:
+      - username: auditor
+        password: $2a$10$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4J/8KzqK8K
+
+acls:
+  - consumer: barclays-admin
+    group: admin
+  - consumer: barclays-teller
+    group: teller
+  - consumer: barclays-auditor
+    group: auditor
+
+certificates:
+  - cert: |
+      -----BEGIN CERTIFICATE-----
+      MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
+      TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+      cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgQ0EwHhcNMTUwNjA0MTEwNDM4
+      WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
+      ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBD
+      QTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
+      h77ct984kI/PO2oql3T6xG/0yqhvtSVmkVOVR6exFOWJpbRxl8qkGOBwjU4Na1kt
+      lRjE9S2s0qVq7t/ej8gPh4qO2clXN4cXtojMA5AbGDl0v5YgB5a3cyLTZJOBOW4
+      d9c7T6I5x3m/9wD4f3r9mSNpZap2pPIkneXZqfuy6pJwGdy1Vz5fkLRvNuTRWXe
+      vK4Gf53tTFGo2eMtQPti3gW3pCdtW/HAjW+7i281z96brajz0dnP5fvg761U9IC
+      qqrp2jGEW1N2w3x4M5u69my0DorF2b+aoPFKG0rJkAdHPquPkyo77tRML7CZTk6
+      iuVr3F6v4kL8b4tDRfiqFRK6mP6p2D9Ql3Jvxixy6J3GZYD1e6Gx5K3z7leS0o
+      HHiuyaz7O4LD8lXIc4ZqJ+XIhB5TL3723HcSJP9/oujfKkQ4CwIDAQABo0IwQDAO
+      BgNVHQ8BAf8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQU7NfjgtJx
+      sNB80tUQjw3VoxNYXscwDQYJKoZIhvcNAQELBQADggIBAHtEdyjClQRTSmxj2J
+      -----END CERTIFICATE-----
+    key: |
+      -----BEGIN PRIVATE KEY-----
+      MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCt6CRz9BQ385ue
+      K1coHIe+3LfPeJCPzjtqKpd0+sRv9Mqhb7UlZpFTlUensRTliab0cZfKpBjgYI1O
+      DWtZLZUYxPUtrNKlau7fXo/ID4eKjtnJVzeHF7aIzAOQGxg5dL+WIAeWt3Miw2SS
+      TjluHfXO0+iOcd5v/cA+H96/ZkjaWWqdpTyJJ3l2an7suqScBnctVc+X5C0bzbk0
+      Vl3ryuBned7UxRqNnjLUD7Yt4Ft6QnbVvwxI1vu4tvNcfe662o89HZz+X74O+tV
+      PSAqqq6doxhFtTdsN8eDObu7bSstA6Kxdm/mKDxShtKyZAHQz6rj5MqO+7UTC+w
+      mU5Oorla9xer+JC/G+LQ0X4qhUSupj+qdg/UJdyb8YsciidhmWA9XuhseSt8+5Xk
+      tKBx4rsss+zuCw/JVyHOGaiflyIQeUy9+9tx3EkT/f6Lo3ypEOAsCAwEAAQKCAQ
+      -----END PRIVATE KEY-----
+    snis:
+      - barclays-api.local
+      - api.barclays.com
+
+plugins:
+  - name: prometheus
+    config:
+      status_codes: true
+      bandwidth: true
+      latency: true
+      upstream_health: true
+      http_methods: true
+      http_status: true
+      kong_latency: true
+      db_latency: true
+      connections: true
+      db_connections: true
+      custom_metrics:
+        - name: request_count
+          type: counter
+          description: "Total number of requests"
+          labels:
+            - service
+            - route
+        - name: request_latency
+          type: histogram
+          description: "Request latency"
+          labels:
+            - service
+            - route
+        - name: response_size
+          type: histogram
+          description: "Response size"
+          labels:
+            - service
+            - route
+
+  - name: correlation-id
+    config:
+      header_name: X-Request-ID
+      generator: uuid
+      echo_downstream: true
+
+  - name: request-size-limiting
+    config:
+      allowed_payload_size: 1048576
+
+  - name: ip-restriction
+    config:
+      allow:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 127.0.0.1
+      deny:
+        - 0.0.0.0/0
+
+  - name: bot-detection
+    config:
+      allow:
+        - Mozilla
+        - Chrome
+        - Safari
+        - Edge
+      deny:
+        - curl
+        - wget
+        - python-requests
+        - go-http-client
