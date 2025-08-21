@@ -2,6 +2,7 @@ _format_version: "3.0"
 _transform: true
 
 services:
+  # Ingestion Service - Main API Gateway
   - name: ingestion-service
     url: http://ingestion-service:8080
     routes:
@@ -88,6 +89,115 @@ services:
               - X-Powered-By
               - Server
 
+  # Processing Service - Internal API
+  - name: processing-service
+    url: http://processing-service:9091
+    routes:
+      - name: processing-api
+        protocols:
+          - https
+        paths:
+          - /processing
+        strip_path: false
+        https_redirect_status_code: 301
+        preserve_host: true
+        regex_priority: 0
+        methods:
+          - GET
+          - POST
+        headers:
+          - name: "X-Request-ID"
+            values:
+              - ".*"
+    plugins:
+      - name: ip-restriction
+        config:
+          allow:
+            - 10.0.0.0/8
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+            - 127.0.0.1
+      - name: request-transformer
+        config:
+          add:
+            headers:
+              - X-Gateway: kong
+              - X-Request-ID: ${request_id}
+
+  # Storage Service - Internal API
+  - name: storage-service
+    url: http://storage-service:9092
+    routes:
+      - name: storage-api
+        protocols:
+          - https
+        paths:
+          - /storage
+        strip_path: false
+        https_redirect_status_code: 301
+        preserve_host: true
+        regex_priority: 0
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        headers:
+          - name: "X-Request-ID"
+            values:
+              - ".*"
+    plugins:
+      - name: ip-restriction
+        config:
+          allow:
+            - 10.0.0.0/8
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+            - 127.0.0.1
+      - name: request-transformer
+        config:
+          add:
+            headers:
+              - X-Gateway: kong
+              - X-Request-ID: ${request_id}
+
+  # Alert Service - Internal API
+  - name: alert-service
+    url: http://alert-service:9093
+    routes:
+      - name: alert-api
+        protocols:
+          - https
+        paths:
+          - /alerts
+        strip_path: false
+        https_redirect_status_code: 301
+        preserve_host: true
+        regex_priority: 0
+        methods:
+          - GET
+          - POST
+          - PUT
+        headers:
+          - name: "X-Request-ID"
+            values:
+              - ".*"
+    plugins:
+      - name: ip-restriction
+        config:
+          allow:
+            - 10.0.0.0/8
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+            - 127.0.0.1
+      - name: request-transformer
+        config:
+          add:
+            headers:
+              - X-Gateway: kong
+              - X-Request-ID: ${request_id}
+
+  # Metrics Service - Prometheus metrics
   - name: metrics-service
     url: http://ingestion-service:9090
     routes:
@@ -121,6 +231,7 @@ services:
               - X-Gateway: kong
               - X-Request-ID: ${request_id}
 
+  # Health Service - Health checks
   - name: health-service
     url: http://ingestion-service:8080
     routes:
@@ -146,6 +257,90 @@ services:
             headers:
               - X-Gateway: kong
               - X-Request-ID: ${request_id}
+
+  # Processing Service Metrics
+  - name: processing-metrics
+    url: http://processing-service:9091
+    routes:
+      - name: processing-metrics-api
+        protocols:
+          - https
+        paths:
+          - /processing/metrics
+        strip_path: false
+        https_redirect_status_code: 301
+        preserve_host: true
+        regex_priority: 0
+        methods:
+          - GET
+        headers:
+          - name: "X-Request-ID"
+            values:
+              - ".*"
+    plugins:
+      - name: ip-restriction
+        config:
+          allow:
+            - 10.0.0.0/8
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+            - 127.0.0.1
+
+  # Storage Service Metrics
+  - name: storage-metrics
+    url: http://storage-service:9092
+    routes:
+      - name: storage-metrics-api
+        protocols:
+          - https
+        paths:
+          - /storage/metrics
+        strip_path: false
+        https_redirect_status_code: 301
+        preserve_host: true
+        regex_priority: 0
+        methods:
+          - GET
+        headers:
+          - name: "X-Request-ID"
+            values:
+              - ".*"
+    plugins:
+      - name: ip-restriction
+        config:
+          allow:
+            - 10.0.0.0/8
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+            - 127.0.0.1
+
+  # Alert Service Metrics
+  - name: alert-metrics
+    url: http://alert-service:9093
+    routes:
+      - name: alert-metrics-api
+        protocols:
+          - https
+        paths:
+          - /alerts/metrics
+        strip_path: false
+        https_redirect_status_code: 301
+        preserve_host: true
+        regex_priority: 0
+        methods:
+          - GET
+        headers:
+          - name: "X-Request-ID"
+            values:
+              - ".*"
+    plugins:
+      - name: ip-restriction
+        config:
+          allow:
+            - 10.0.0.0/8
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+            - 127.0.0.1
 
 consumers:
   - username: barclays-admin
